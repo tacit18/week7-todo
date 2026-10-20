@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Todo V2.0 - 数据驱动 + 持久化</title>
+<title>Todo V2.1 - 事件委托 + 编辑</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -29,20 +29,23 @@
   .filters button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
   #todo-list { list-style: none; padding: 0; margin: 0; }
   #todo-list li {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; gap: 8px;
     padding: 10px 12px; margin-bottom: 8px; background: #fff;
     border: 1px solid #e5e7eb; border-radius: 6px; cursor: pointer;
   }
-  #todo-list li.done { text-decoration: line-through; color: #999; }
+  #todo-list li.done .text { text-decoration: line-through; color: #999; }
+  #todo-list li .text { flex: 1; }
+  #todo-list li .actions { display: flex; gap: 6px; }
   #todo-list li button {
-    background: transparent; border: none; color: #dc2626;
-    font-size: 18px; padding: 0 4px;
+    background: transparent; border: none; font-size: 14px; padding: 2px 6px;
   }
+  #todo-list li button[data-action="edit"] { color: #2563eb; }
+  #todo-list li button[data-action="delete"] { color: #dc2626; font-size: 18px; }
   .stats { margin-top: 16px; font-size: 14px; color: #666; }
 </style>
 </head>
 <body>
-<h1>Todo V2.0</h1>
+<h1>Todo V2.1</h1>
 <div class="input-row">
   <input id="todo-input" type="text" placeholder="输入任务，回车或点击添加">
   <button id="add-btn">添加</button>
@@ -56,23 +59,18 @@
 <div class="stats" id="stats"></div>
 
 <script>
-// ① 存储的键名
 const KEY = 'todos';
 
-// ② DOM 元素
 const list       = document.querySelector('#todo-list');
 const input      = document.querySelector('#todo-input');
 const addBtn     = document.querySelector('#add-btn');
 const stats      = document.querySelector('#stats');
 const filterBtns = document.querySelectorAll('.filters button');
 
-// ③ 单一数据源
 let todos = load();
-
-// ④ 视图状态
 let filter = 'all';
+let editingId = null;   // 正在编辑的任务 id，null 表示不在编辑态
 
-// ⑤ 保存 / 读取（localStorage）
 function save() {
   localStorage.setItem(KEY, JSON.stringify(todos));
 }
@@ -82,7 +80,7 @@ function load() {
   return JSON.parse(raw);        // 存过 -> 解析
 }
 
-// 三个操作：改数据 -> 保存 -> 重渲染
+// 三个操作：改数据 -> 保存 -> 重渲染（不可变更新）
 function addTodo(text) {
   todos = [...todos, { id: Date.now(), text, completed: false }];
   save(); render();
@@ -96,55 +94,106 @@ function toggleTodo(id) {
     t.id === id ? { ...t, completed: !t.completed } : t);
   save(); render();
 }
+// 编辑分支：先把文本填入输入框，进入编辑态，保存时再更新数据
+function editTodo(id) {
+  const todo = todos.find(t => t.id === id);
+  if (!todo) return;
+  editingId = id;
+  input.value = todo.text;
+  input.focus();
+  addBtn.textContent = '保存';
+}
+function saveEdit(text) {
+  todos = todos.map(t => t.id === editingId ? { ...t, text } : t);
+  save();
+  editingId = null;
+  addBtn.textContent = '添加';
+  input.value = '';
+  render();
+}
 
-// 筛选：视图状态，不需要 save()
 function setFilter(f) {
   filter = f;
   render();
 }
 
-// ⑥ 渲染：DOM 是 todos 的投影
+// 渲染：只负责“画”，不再给每个 li 单独绑事件
 function render() {
   filterBtns.forEach(btn => {
     btn.classList.toggle('active', btn.dataset.filter === filter);
   });
 
-  list.innerHTML = '';   // 清空 -> 重画
+  list.innerHTML = '';
 
-  // 过滤：决定显示哪些，不改 todos 本身
   const shown = todos.filter(t =>
     filter === 'all'  ? true :
     filter === 'done' ? t.completed : !t.completed);
 
   shown.forEach(t => {
     const li = document.createElement('li');
-    li.textContent = t.text;
     li.dataset.id = t.id;
     if (t.completed) li.classList.add('done');
 
-    li.addEventListener('click', () => toggleTodo(t.id));
+    const span = document.createElement('span');
+    span.className = 'text';
+    span.textContent = t.text;
+    li.appendChild(span);
+
+    const actions = document.createElement('span');
+    actions.className = 'actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.dataset.action = 'edit';
+    editBtn.textContent = '编辑';
+    actions.appendChild(editBtn);
 
     const delBtn = document.createElement('button');
-    delBtn.textContent = 'x';
-    delBtn.addEventListener('click', (e) => {
-      e.stopPropagation();   // 防止顺带触发 li 的点击
-      removeTodo(t.id);
-    });
-    li.appendChild(delBtn);
+    delBtn.type = 'button';
+    delBtn.dataset.action = 'delete';
+    delBtn.textContent = '×';
+    actions.appendChild(delBtn);
+
+    li.appendChild(actions);
     list.appendChild(li);
   });
 
-  // 统计（reduce 示例）
   const done = todos.reduce((n, t) => n + (t.completed ? 1 : 0), 0);
   stats.textContent = `共 ${todos.length} 项，已完成 ${done} 项`;
 }
 
-// 事件绑定
+// 事件委托：只在父容器 ul 上绑一次监听
+list.addEventListener('click', (e) => {
+  if (!(e.target instanceof Element)) return;   // 边界：不是元素
+  const item = e.target.closest('li');          // 找到任务项
+  if (!item || !list.contains(item)) return;    // 边界：点不到 li / 不在本列表
+  const id = Number(item.dataset.id);           // dataset 是字符串，转回数字
+  if (!id) return;                              // 边界：没有 id
+
+  const delBtn = e.target.closest('[data-action="delete"]');
+  if (delBtn && item.contains(delBtn)) {
+    removeTodo(id);
+    return;                                     // 删除后立即结束，不再切换
+  }
+
+  const editBtn = e.target.closest('[data-action="edit"]');
+  if (editBtn && item.contains(editBtn)) {
+    editTodo(id);
+    return;
+  }
+
+  toggleTodo(id);                               // 其它点击 -> 切换完成态
+});
+
 addBtn.addEventListener('click', () => {
   const text = input.value.trim();
-  if (!text) return;      // 空输入不添加
-  addTodo(text);
-  input.value = '';       // 输入框清空
+  if (!text) return;
+  if (editingId !== null) {
+    saveEdit(text);
+  } else {
+    addTodo(text);
+    input.value = '';
+  }
 });
 
 input.addEventListener('keydown', (e) => {
@@ -155,7 +204,6 @@ filterBtns.forEach(btn => {
   btn.addEventListener('click', () => setFilter(btn.dataset.filter));
 });
 
-// 初次渲染
 render();
 </script>
 </body>
